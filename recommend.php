@@ -6,18 +6,16 @@
  *
  * Flow:
  *  1. Get Spotify OAuth2 token (Client Credentials)
- *  2. Search tracks with mood-specific query
- *  3. Return 10 shuffled tracks with full Spotify URLs
+ *  2. Search for tracks using mood-based genre/keyword queries
+ *     — Recommendations API was DEPRECATED by Spotify in Nov 2024, use Search instead
+ *  3. Return 10 shuffled tracks with real Spotify URLs
  *  4. Fallback to curated list if Spotify is unreachable
- *
- * ⚠️  UPDATE $client_id and $client_secret with YOUR Spotify app credentials:
- *     https://developer.spotify.com/dashboard
  */
 header("Content-Type: application/json");
 
 // ── Spotify Credentials ──────────────────────────────────────────────────────
-$client_id     = "c4d14c5753144432b3f25541168a1c33";  // ← Replace with your Client ID
-$client_secret = "e1dd878601684cafaa7904cc45baa2b9";  // ← Replace with your Client Secret
+$client_id     = "c4d14c5753144432b3f25541168a1c33";
+$client_secret = "e1dd878601684cafaa7904cc45baa2b9";
 
 // ── Validate mood ────────────────────────────────────────────────────────────
 $mood = strtolower(trim($_GET['mood'] ?? 'neutral'));
@@ -26,7 +24,7 @@ $allowed = ["happy","sad","angry","energetic","romantic","chill","anxious",
             "neutral","fearful","disgusted","melancholy","focus"];
 if (!in_array($mood, $allowed)) $mood = "neutral";
 
-// ── cURL helper ───────────────────────────────────────────────────────────────
+// ── cURL helpers ──────────────────────────────────────────────────────────────
 function curlGet(string $url, array $headers): array {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -64,27 +62,35 @@ function curlPost(string $url, array $headers, array $fields): array {
     return [$raw, $err, $code];
 }
 
-// ── Mood → Spotify search queries ────────────────────────────────────────────
-// Multiple queries per mood; a random one is picked each call for variety
+// ── Build a guaranteed-working Spotify search URL ────────────────────────────
+function spotifySearchUrl(string $song, string $artist): string {
+    return "https://open.spotify.com/search/" . rawurlencode($song . " " . $artist);
+}
+
+// ── Mood → Multiple Search Queries ───────────────────────────────────────────
+// We run 3 different search queries per mood and pool the results,
+// then shuffle and return 10. This ensures variety on each refresh.
+// NOTE: /v1/recommendations was deprecated by Spotify on Nov 27, 2024.
+//       We now use /v1/search which works with Client Credentials.
 $moodQueries = [
-    "happy"     => ["happy feel good pop hits","upbeat cheerful music","fun sunny day songs","joyful dance pop","positive vibes songs 2024"],
-    "sad"       => ["sad emotional ballads","heartbreak songs acoustic","melancholy indie songs","tearful slow ballads","sad love songs"],
-    "angry"     => ["angry rock metal","rage against machine style","aggressive punk rock","intense hard rock","metal angry songs"],
-    "energetic" => ["workout pump up songs","high energy edm banger","gym motivation music","upbeat running songs","energetic dance hits"],
-    "romantic"  => ["romantic love songs ballads","soft romantic music","love songs acoustic","sweet romantic playlist","valentine love songs"],
-    "chill"     => ["lofi hip hop chill","ambient chill relaxing","mellow indie chill","peaceful calm music","chillout downtempo"],
-    "anxious"   => ["calming anxiety relief music","soothing piano meditation","peaceful stress relief","ambient calm music","gentle healing music"],
-    "nostalgic" => ["90s nostalgic hits","80s classic throwback","retro oldies feel","nostalgic childhood songs","best of 90s pop"],
-    "lonely"    => ["lonely sad songs","alone acoustic heartfelt","solitude indie folk","alone at night songs","loneliness music"],
-    "confident" => ["confident empowering anthems","motivational hip hop","powerful boss songs","self empowerment music","confidence boost playlist"],
-    "tired"     => ["tired sleepy lofi","dreamy slow songs","sleep relax music","lo-fi tired night","late night slow songs"],
-    "hopeful"   => ["hopeful uplifting songs","inspirational morning music","optimistic pop songs","positive future anthems","uplifting indie"],
-    "focus"     => ["deep focus study music","concentration instrumental","coding lofi beats","study music instrumental","focus work ambient"],
-    "melancholy"=> ["melancholy indie folk","bittersweet acoustic songs","wistful slow music","pensive indie sad","somber beautiful music"],
-    "surprised" => ["euphoric exciting pop","wow amazing upbeat songs","surprising upbeat music"],
-    "fearful"   => ["dark atmospheric music","tense dramatic cinematic","suspense dark ambient"],
-    "disgusted" => ["punk rock edgy songs","alternative dark indie","gritty raw music"],
-    "neutral"   => ["top hits 2024 2025","trending popular songs","billboard hot 100","chart toppers today","popular music now"],
+    "happy"      => ["genre:pop mood:happy", "feel good dance pop", "upbeat happy hits"],
+    "sad"        => ["sad heartbreak acoustic", "genre:indie emotional sad", "breakup songs melancholy"],
+    "angry"      => ["genre:metal heavy aggressive", "genre:rock angry intense", "genre:punk hard fast"],
+    "energetic"  => ["genre:edm high energy workout", "genre:hip-hop pump up", "genre:rock energetic fast"],
+    "romantic"   => ["genre:pop romantic love songs", "genre:soul love ballad", "genre:r-n-b romantic smooth"],
+    "chill"      => ["genre:chill lo-fi relaxed", "genre:indie chill vibes", "genre:pop mellow easy"],
+    "anxious"    => ["genre:classical calm peaceful piano", "ambient relaxing meditation", "genre:acoustic gentle soft"],
+    "nostalgic"  => ["genre:rock 80s classic hits", "genre:pop 90s throwback", "genre:alternative 2000s nostalgia"],
+    "lonely"     => ["genre:indie lonely solitude", "genre:folk alone quiet", "genre:alternative sad introspective"],
+    "confident"  => ["genre:hip-hop confident swagger", "genre:pop empowerment bold", "genre:r-n-b confidence strong"],
+    "tired"      => ["genre:ambient sleepy slow", "genre:classical soft quiet night", "genre:acoustic gentle lullaby"],
+    "hopeful"    => ["genre:pop uplifting hopeful", "genre:indie optimistic bright", "genre:folk hopeful positive"],
+    "focus"      => ["genre:classical focus study", "genre:ambient instrumental focus", "genre:piano concentration work"],
+    "melancholy" => ["genre:indie melancholy bittersweet", "genre:folk sad quiet", "genre:alternative introspective"],
+    "surprised"  => ["genre:pop unexpected surprise upbeat", "genre:edm exciting energy", "genre:pop viral trending"],
+    "fearful"    => ["genre:ambient dark tense", "genre:classical dramatic intense", "genre:indie dark moody"],
+    "disgusted"  => ["genre:punk angry protest", "genre:metal aggressive heavy", "genre:rock rebellious"],
+    "neutral"    => ["genre:pop top hits", "genre:indie popular", "genre:rock mainstream"],
 ];
 
 // ── Step 1: Get Spotify Access Token ─────────────────────────────────────────
@@ -101,302 +107,396 @@ $tokenData = json_decode($tokenRaw, true);
 
 if ($tokenErr || !isset($tokenData['access_token'])) {
     if ($tokenErr)              $spotifyError = "curl_error: $tokenErr";
-    elseif ($tokenHttp === 401) $spotifyError = "Invalid Spotify credentials. Visit developer.spotify.com/dashboard to get valid keys.";
-    elseif ($tokenHttp === 400) $spotifyError = "Bad request to Spotify token endpoint.";
+    elseif ($tokenHttp === 401) $spotifyError = "Invalid Spotify credentials (401).";
+    elseif ($tokenHttp === 400) $spotifyError = "Bad request to Spotify token endpoint (400).";
     else                        $spotifyError = "Token error HTTP $tokenHttp: " . ($tokenData['error_description'] ?? $tokenData['error'] ?? 'unknown');
     goto use_fallback;
 }
 
-$token = $tokenData['access_token'];
+$token   = $tokenData['access_token'];
+$queries = $moodQueries[$mood] ?? $moodQueries['neutral'];
 
-// ── Step 2: Search Tracks on Spotify ─────────────────────────────────────────
-$queries  = $moodQueries[$mood] ?? $moodQueries['neutral'];
-$queryStr = $queries[array_rand($queries)];
-$offset   = rand(0, 30); // Randomise for variety
+// ── Step 2: Search API — run multiple queries for variety ─────────────────────
+// Use a random offset (0–20) so repeated requests return different results
+$allTracks = [];
 
-[$searchRaw, $searchErr, $searchHttp] = curlGet(
-    "https://api.spotify.com/v1/search?" . http_build_query([
-        'q'      => $queryStr,
-        'type'   => 'track',
-        'limit'  => 20,
-        'offset' => $offset,
-        'market' => 'IN', // India market — change if needed
-    ]),
-    ["Authorization: Bearer $token"]
-);
+foreach ($queries as $q) {
+    $offset = rand(0, 20); // randomise offset for variety on refresh
+    $url = "https://api.spotify.com/v1/search?" . http_build_query([
+        "q"      => $q,
+        "type"   => "track",
+        "limit"  => 15,
+        "offset" => $offset,
+    ]);
 
-$searchData = json_decode($searchRaw, true);
+    [$searchRaw, $searchErr, $searchHttp] = curlGet($url, ["Authorization: Bearer $token"]);
 
-// Retry at offset 0 if no results at random offset
-if (empty($searchData['tracks']['items'])) {
-    [$searchRaw, , ] = curlGet(
-        "https://api.spotify.com/v1/search?" . http_build_query([
-            'q' => $queryStr, 'type' => 'track', 'limit' => 20, 'offset' => 0, 'market' => 'IN',
-        ]),
-        ["Authorization: Bearer $token"]
-    );
+    if ($searchErr || $searchHttp !== 200) {
+        // record first error but keep trying other queries
+        if (!$spotifyError) {
+            $decoded = json_decode($searchRaw, true);
+            $spotifyError = $searchErr ?: "Search API HTTP $searchHttp: " . ($decoded['error']['message'] ?? 'unknown');
+        }
+        continue;
+    }
+
     $searchData = json_decode($searchRaw, true);
+    $items      = $searchData['tracks']['items'] ?? [];
+    $allTracks  = array_merge($allTracks, $items);
 }
 
-// Try a different query if still empty
-if (empty($searchData['tracks']['items'])) {
-    $altQuery = $queries[0]; // Use first (most reliable) query
-    [$searchRaw, , ] = curlGet(
-        "https://api.spotify.com/v1/search?" . http_build_query([
-            'q' => $altQuery, 'type' => 'track', 'limit' => 20, 'offset' => 0,
-        ]),
-        ["Authorization: Bearer $token"]
-    );
-    $searchData = json_decode($searchRaw, true);
+if (empty($allTracks)) {
+    if (!$spotifyError) $spotifyError = "Search returned no tracks for mood: $mood";
+    goto use_fallback;
 }
 
-if (!empty($searchData['tracks']['items'])) {
-    $tracks = array_values(array_filter(
-        $searchData['tracks']['items'],
-        fn($t) => !empty($t['name']) && !empty($t['external_urls']['spotify'])
-    ));
-    shuffle($tracks);
-    $tracks = array_slice($tracks, 0, 10);
-
-    $result = array_map(fn($t) => [
-        "name"          => $t['name'],
-        "artists"       => [["name" => $t['artists'][0]['name'] ?? 'Unknown']],
-        "album"         => ["images" => $t['album']['images'] ?? []],
-        "external_urls" => ["spotify" => $t['external_urls']['spotify']],
-        "preview_url"   => $t['preview_url'] ?? null,
-    ], $tracks);
-
-    echo json_encode(["success" => true, "mood" => $mood, "method" => "spotify", "tracks" => $result]);
-    exit;
+// Deduplicate by track ID, filter out tracks without Spotify URLs
+$seen   = [];
+$unique = [];
+foreach ($allTracks as $t) {
+    if (!empty($t['id']) && !isset($seen[$t['id']]) && !empty($t['external_urls']['spotify'])) {
+        $seen[$t['id']] = true;
+        $unique[] = $t;
+    }
 }
 
-$spotifyError = $searchErr ?: "No tracks found (HTTP $searchHttp)";
+if (empty($unique)) {
+    $spotifyError = "No unique tracks found after dedup for mood: $mood";
+    goto use_fallback;
+}
+
+// Shuffle and slice to 10
+shuffle($unique);
+$unique = array_slice($unique, 0, 10);
+
+$result = array_map(fn($t) => [
+    "name"          => $t['name'],
+    "artists"       => [["name" => $t['artists'][0]['name'] ?? 'Unknown']],
+    "album"         => ["images" => $t['album']['images'] ?? []],
+    "external_urls" => ["spotify" => $t['external_urls']['spotify']],
+    "preview_url"   => $t['preview_url'] ?? null,
+], $unique);
+
+echo json_encode(["success" => true, "mood" => $mood, "method" => "spotify_search", "tracks" => $result]);
+exit;
 
 // ── Curated Fallback ──────────────────────────────────────────────────────────
-// Used when Spotify is unreachable or credentials are expired.
-// Each entry: [name, artist, direct_spotify_track_url]
 use_fallback:
 
 $fallback = [
     "happy" => [
-        ["Happy", "Pharrell Williams", "https://open.spotify.com/track/60nZcImufyMA1MKQY3dcCH"],
-        ["Can't Stop the Feeling!", "Justin Timberlake", "https://open.spotify.com/track/1WkMMavIMc4JZ8cfMmxHkI"],
-        ["Uptown Funk", "Mark Ronson ft. Bruno Mars", "https://open.spotify.com/track/32OlwWuMpZ6b0aN2RZOeMS"],
-        ["Good as Hell", "Lizzo", "https://open.spotify.com/track/3Yh9lSMD9CijudH9xa4Bq7"],
-        ["Shake It Off", "Taylor Swift", "https://open.spotify.com/track/0cqRj7pUJDkTCEsJkx8snD"],
-        ["Walking on Sunshine", "Katrina & The Waves", "https://open.spotify.com/track/05wIrZSwuaVWhcv5FfqeH0"],
-        ["September", "Earth, Wind & Fire", "https://open.spotify.com/track/2grjqo0Frpf2okIBiifQKs"],
-        ["Dancing Queen", "ABBA", "https://open.spotify.com/track/0GjEhVFGZW8afUYGChu3Rr"],
-        ["Levitating", "Dua Lipa", "https://open.spotify.com/track/463CkQjx2Zk1yXoBuierM9"],
-        ["Best Day Of My Life", "American Authors", "https://open.spotify.com/track/6bkwJBHN5M4MIwGlL3l4yY"],
+        ["Happy",                    "Pharrell Williams",      spotifySearchUrl("Happy",                    "Pharrell Williams")],
+        ["Uptown Funk",              "Mark Ronson",            spotifySearchUrl("Uptown Funk",              "Mark Ronson Bruno Mars")],
+        ["Can't Stop the Feeling!", "Justin Timberlake",      spotifySearchUrl("Can't Stop the Feeling",   "Justin Timberlake")],
+        ["Shake It Off",             "Taylor Swift",           spotifySearchUrl("Shake It Off",             "Taylor Swift")],
+        ["Levitating",               "Dua Lipa",               spotifySearchUrl("Levitating",               "Dua Lipa")],
+        ["September",                "Earth, Wind & Fire",     spotifySearchUrl("September",                "Earth Wind Fire")],
+        ["Good as Hell",             "Lizzo",                  spotifySearchUrl("Good as Hell",             "Lizzo")],
+        ["Blinding Lights",          "The Weeknd",             spotifySearchUrl("Blinding Lights",          "The Weeknd")],
+        ["Sunflower",                "Post Malone",            spotifySearchUrl("Sunflower",                "Post Malone Swae Lee")],
+        ["Walking on Sunshine",      "Katrina & The Waves",    spotifySearchUrl("Walking on Sunshine",      "Katrina and the Waves")],
+        ["Dynamite",                 "BTS",                    spotifySearchUrl("Dynamite",                 "BTS")],
+        ["Watermelon Sugar",         "Harry Styles",           spotifySearchUrl("Watermelon Sugar",         "Harry Styles")],
+        ["As It Was",                "Harry Styles",           spotifySearchUrl("As It Was",                "Harry Styles")],
+        ["Flowers",                  "Miley Cyrus",            spotifySearchUrl("Flowers",                  "Miley Cyrus")],
+        ["Starboy",                  "The Weeknd",             spotifySearchUrl("Starboy",                  "The Weeknd")],
     ],
     "sad" => [
-        ["Someone Like You", "Adele", "https://open.spotify.com/track/4kflIUSP30ltMRQCg4SFRG"],
-        ["The Night We Met", "Lord Huron", "https://open.spotify.com/track/0HMi2VJFVqkZlTASKkzJSE"],
-        ["Fix You", "Coldplay", "https://open.spotify.com/track/7LVHVU3tWfcxj5aiPFEW4Q"],
-        ["Skinny Love", "Bon Iver", "https://open.spotify.com/track/5dMGEelyAoSmNjwBMreMpj"],
-        ["Liability", "Lorde", "https://open.spotify.com/track/5N3hjp1WNCSoS0wd8UqBBe"],
-        ["All I Want", "Kodaline", "https://open.spotify.com/track/2vD5TDTJ7gSzNXNXfBJNmI"],
-        ["Let Her Go", "Passenger", "https://open.spotify.com/track/6zFUNYV7wnMbPqkEBsekNX"],
-        ["Breathe Me", "Sia", "https://open.spotify.com/track/6SsIdN9pVBFU6yBdRBQDhO"],
-        ["Hurt", "Johnny Cash", "https://open.spotify.com/track/28cngnQkQ6larUs9HCNxm9"],
-        ["Motion Sickness", "Phoebe Bridgers", "https://open.spotify.com/track/4Eln3SaXKClN4aLkUEeEJ0"],
+        ["Someone Like You",         "Adele",                  spotifySearchUrl("Someone Like You",         "Adele")],
+        ["The Night We Met",         "Lord Huron",             spotifySearchUrl("The Night We Met",         "Lord Huron")],
+        ["Fix You",                  "Coldplay",               spotifySearchUrl("Fix You",                  "Coldplay")],
+        ["All I Want",               "Kodaline",               spotifySearchUrl("All I Want",               "Kodaline")],
+        ["Let Her Go",               "Passenger",              spotifySearchUrl("Let Her Go",               "Passenger")],
+        ["Skinny Love",              "Bon Iver",               spotifySearchUrl("Skinny Love",              "Bon Iver")],
+        ["Chasing Cars",             "Snow Patrol",            spotifySearchUrl("Chasing Cars",             "Snow Patrol")],
+        ["The Scientist",            "Coldplay",               spotifySearchUrl("The Scientist",            "Coldplay")],
+        ["Liability",                "Lorde",                  spotifySearchUrl("Liability",                "Lorde")],
+        ["drivers license",          "Olivia Rodrigo",         spotifySearchUrl("drivers license",          "Olivia Rodrigo")],
+        ["Happier",                  "Olivia Rodrigo",         spotifySearchUrl("Happier",                  "Olivia Rodrigo")],
+        ["Motion Sickness",          "Phoebe Bridgers",        spotifySearchUrl("Motion Sickness",          "Phoebe Bridgers")],
+        ["Ghost",                    "Justin Bieber",          spotifySearchUrl("Ghost",                    "Justin Bieber")],
+        ["Before He Cheats",         "Carrie Underwood",       spotifySearchUrl("Before He Cheats",         "Carrie Underwood")],
+        ["When the Party's Over",    "Billie Eilish",          spotifySearchUrl("When the Party's Over",    "Billie Eilish")],
     ],
     "angry" => [
-        ["Break Stuff", "Limp Bizkit", "https://open.spotify.com/track/4Gp3rHYILBXQqvF6m4cHlR"],
-        ["Killing In The Name", "Rage Against The Machine", "https://open.spotify.com/track/59WN2psjkt1tyaxjspN8fp"],
-        ["Given Up", "Linkin Park", "https://open.spotify.com/track/7eQJUEDmACvLRCgJ2yxDxR"],
-        ["Enter Sandman", "Metallica", "https://open.spotify.com/track/6as7Or03XNvo0JyEbGnmGV"],
-        ["Bodies", "Drowning Pool", "https://open.spotify.com/track/3oA1fjJMKVjY7y1RDFmMpY"],
-        ["Du Hast", "Rammstein", "https://open.spotify.com/track/6Ei9WLObWw5OBb0ykxNzxX"],
-        ["Chop Suey!", "System of a Down", "https://open.spotify.com/track/2CHvBhKGpFMIZUAInCuSPY"],
-        ["Last Resort", "Papa Roach", "https://open.spotify.com/track/79cdsBZQLsi5xQANvkJoDA"],
-        ["Down With The Sickness", "Disturbed", "https://open.spotify.com/track/5IqGZpGXPMUqCZhVODqRLD"],
-        ["Bulls on Parade", "Rage Against The Machine", "https://open.spotify.com/track/1HRpTBqiPpsMUx9kJhQ8M0"],
+        ["Killing In The Name",      "Rage Against The Machine", spotifySearchUrl("Killing In The Name",   "Rage Against The Machine")],
+        ["Numb",                     "Linkin Park",              spotifySearchUrl("Numb",                  "Linkin Park")],
+        ["Given Up",                 "Linkin Park",              spotifySearchUrl("Given Up",              "Linkin Park")],
+        ["Enter Sandman",            "Metallica",                spotifySearchUrl("Enter Sandman",         "Metallica")],
+        ["Chop Suey!",               "System of a Down",         spotifySearchUrl("Chop Suey",            "System of a Down")],
+        ["Last Resort",              "Papa Roach",               spotifySearchUrl("Last Resort",           "Papa Roach")],
+        ["Break Stuff",              "Limp Bizkit",              spotifySearchUrl("Break Stuff",           "Limp Bizkit")],
+        ["Bulls on Parade",          "Rage Against The Machine", spotifySearchUrl("Bulls on Parade",       "Rage Against The Machine")],
+        ["Down With The Sickness",   "Disturbed",                spotifySearchUrl("Down With The Sickness","Disturbed")],
+        ["Du Hast",                  "Rammstein",                spotifySearchUrl("Du Hast",               "Rammstein")],
+        ["Crawling",                 "Linkin Park",              spotifySearchUrl("Crawling",              "Linkin Park")],
+        ["In The End",               "Linkin Park",              spotifySearchUrl("In The End",            "Linkin Park")],
+        ["Wake Up",                  "Rage Against The Machine", spotifySearchUrl("Wake Up",               "Rage Against The Machine")],
+        ["Master of Puppets",        "Metallica",                spotifySearchUrl("Master of Puppets",     "Metallica")],
+        ["Bodies",                   "Drowning Pool",            spotifySearchUrl("Bodies",                "Drowning Pool")],
     ],
     "energetic" => [
-        ["Titanium", "David Guetta ft. Sia", "https://open.spotify.com/track/0gplL1WMoJ6iYaIlTKUBsA"],
-        ["Lose Yourself", "Eminem", "https://open.spotify.com/track/7w9bgPAmPTtrzt15v7sefu"],
-        ["Eye of the Tiger", "Survivor", "https://open.spotify.com/track/2KH16WveTQWT6KOG9Rg6e2"],
-        ["Stronger", "Kanye West", "https://open.spotify.com/track/6YllAFNXLKhSVOoKAifA3G"],
-        ["Run The World (Girls)", "Beyoncé", "https://open.spotify.com/track/4P1tqKTHW7GalYQ7nAFNPu"],
-        ["Radioactive", "Imagine Dragons", "https://open.spotify.com/track/69yfbpvmkzOibQYyzA9meD"],
-        ["Till I Collapse", "Eminem", "https://open.spotify.com/track/1w9O7cMJvl6oAkVBpHfBlN"],
-        ["Thunder", "Imagine Dragons", "https://open.spotify.com/track/1zB4vmk8tFRmM9UULNzbLB"],
-        ["Turn Down for What", "DJ Snake & Lil Jon", "https://open.spotify.com/track/3Rq3sASLDGzlbd06r7ELBT"],
-        ["Power", "Kanye West", "https://open.spotify.com/track/2gZUPNdnz5Y45eiGxpHGSc"],
+        ["Lose Yourself",            "Eminem",                 spotifySearchUrl("Lose Yourself",            "Eminem")],
+        ["Eye of the Tiger",         "Survivor",               spotifySearchUrl("Eye of the Tiger",         "Survivor")],
+        ["Radioactive",              "Imagine Dragons",        spotifySearchUrl("Radioactive",              "Imagine Dragons")],
+        ["Titanium",                 "David Guetta ft. Sia",   spotifySearchUrl("Titanium",                 "David Guetta Sia")],
+        ["Turn Down for What",       "DJ Snake & Lil Jon",     spotifySearchUrl("Turn Down for What",       "DJ Snake Lil Jon")],
+        ["Stronger",                 "Kanye West",             spotifySearchUrl("Stronger",                 "Kanye West")],
+        ["Thunderstruck",            "AC/DC",                  spotifySearchUrl("Thunderstruck",            "ACDC")],
+        ["Till I Collapse",          "Eminem",                 spotifySearchUrl("Till I Collapse",          "Eminem")],
+        ["Run The World (Girls)",    "Beyoncé",                spotifySearchUrl("Run The World Girls",      "Beyonce")],
+        ["Jump Around",              "House of Pain",          spotifySearchUrl("Jump Around",              "House of Pain")],
+        ["Power",                    "Kanye West",             spotifySearchUrl("Power",                    "Kanye West")],
+        ["SICKO MODE",               "Travis Scott",           spotifySearchUrl("SICKO MODE",               "Travis Scott")],
+        ["God's Plan",               "Drake",                  spotifySearchUrl("God's Plan",               "Drake")],
+        ["Rockstar",                 "Post Malone",            spotifySearchUrl("Rockstar",                 "Post Malone")],
+        ["Humble",                   "Kendrick Lamar",         spotifySearchUrl("Humble",                   "Kendrick Lamar")],
     ],
     "romantic" => [
-        ["Perfect", "Ed Sheeran", "https://open.spotify.com/track/0tgVpDi06FyKpA1z0VMD4v"],
-        ["All of Me", "John Legend", "https://open.spotify.com/track/3U4isOIWM3VvDubwSI3y7a"],
-        ["Make You Feel My Love", "Adele", "https://open.spotify.com/track/7FnaUVFKjqIGQ7VUuPNQaY"],
-        ["A Thousand Years", "Christina Perri", "https://open.spotify.com/track/6lanRgr6wXibZr8KgzXxBl"],
-        ["Lover", "Taylor Swift", "https://open.spotify.com/track/1dGr1c8CrMLDpV6mPbImSI"],
-        ["Can't Help Falling In Love", "Elvis Presley", "https://open.spotify.com/track/44AyOl4qVkzS48vBsbNXaC"],
-        ["Your Song", "Elton John", "https://open.spotify.com/track/7bTd3sOxQJm5P78UPgmFWa"],
-        ["Thinking Out Loud", "Ed Sheeran", "https://open.spotify.com/track/34gCuhDGsG4bRPIf9bb02f"],
-        ["At Last", "Etta James", "https://open.spotify.com/track/5vPGKMiPRETjWMbeBRXaMV"],
-        ["Die For You", "The Weeknd", "https://open.spotify.com/track/4AogqAMFomQfGVMOJT3U0K"],
+        ["Perfect",                  "Ed Sheeran",             spotifySearchUrl("Perfect",                  "Ed Sheeran")],
+        ["All of Me",                "John Legend",            spotifySearchUrl("All of Me",                "John Legend")],
+        ["A Thousand Years",         "Christina Perri",        spotifySearchUrl("A Thousand Years",         "Christina Perri")],
+        ["Thinking Out Loud",        "Ed Sheeran",             spotifySearchUrl("Thinking Out Loud",        "Ed Sheeran")],
+        ["Can't Help Falling In Love","Elvis Presley",         spotifySearchUrl("Can't Help Falling In Love","Elvis Presley")],
+        ["Lover",                    "Taylor Swift",           spotifySearchUrl("Lover",                    "Taylor Swift")],
+        ["Make You Feel My Love",    "Adele",                  spotifySearchUrl("Make You Feel My Love",    "Adele")],
+        ["Just the Way You Are",     "Bruno Mars",             spotifySearchUrl("Just the Way You Are",     "Bruno Mars")],
+        ["Crazy in Love",            "Beyoncé",                spotifySearchUrl("Crazy in Love",            "Beyonce")],
+        ["Everything",               "Michael Bublé",          spotifySearchUrl("Everything",               "Michael Buble")],
+        ["Marry You",                "Bruno Mars",             spotifySearchUrl("Marry You",                "Bruno Mars")],
+        ["Die For You",              "The Weeknd",             spotifySearchUrl("Die For You",              "The Weeknd")],
+        ["Enchanted",                "Taylor Swift",           spotifySearchUrl("Enchanted",                "Taylor Swift")],
+        ["At Last",                  "Etta James",             spotifySearchUrl("At Last",                  "Etta James")],
+        ["La Vie En Rose",           "Édith Piaf",             spotifySearchUrl("La Vie En Rose",           "Edith Piaf")],
     ],
     "chill" => [
-        ["Sunset Lover", "Petit Biscuit", "https://open.spotify.com/track/6jFCdMuXOdEJJWIlWZABxG"],
-        ["Redbone", "Childish Gambino", "https://open.spotify.com/track/6MMWLjIFGMEAiGQ9YNqD6L"],
-        ["Sunday Morning", "Maroon 5", "https://open.spotify.com/track/2DQ2TMPccBkKYTqBRJsNMx"],
-        ["Electric Feel", "MGMT", "https://open.spotify.com/track/3FtYbEfBqAlGO46NUDtSAt"],
-        ["Golden Hour", "JVKE", "https://open.spotify.com/track/5odlY52u43F5BjByhxg7wg"],
-        ["Bloom", "The Paper Kites", "https://open.spotify.com/track/1FkxGMHIXYqNdF7RSNK4T9"],
-        ["coffee", "beabadoobee", "https://open.spotify.com/track/6cf4iSs6UFpNwT3KJHP8jZ"],
-        ["Feels", "Calvin Harris", "https://open.spotify.com/track/5bcTCxgc7xVfSaMV3RoA7n"],
-        ["Waves", "Mr. Probz", "https://open.spotify.com/track/0mnRBFJjVqhEyQbf0RSCXM"],
-        ["Yellow", "Coldplay", "https://open.spotify.com/track/3AJwUDP919kvQ9QcozQPxg"],
+        ["Redbone",                  "Childish Gambino",       spotifySearchUrl("Redbone",                  "Childish Gambino")],
+        ["Sunday Morning",           "Maroon 5",               spotifySearchUrl("Sunday Morning",           "Maroon 5")],
+        ["Golden Hour",              "JVKE",                   spotifySearchUrl("Golden Hour",              "JVKE")],
+        ["Electric Feel",            "MGMT",                   spotifySearchUrl("Electric Feel",            "MGMT")],
+        ["Yellow",                   "Coldplay",               spotifySearchUrl("Yellow",                   "Coldplay")],
+        ["coffee",                   "beabadoobee",            spotifySearchUrl("coffee",                   "beabadoobee")],
+        ["Banana Pancakes",          "Jack Johnson",           spotifySearchUrl("Banana Pancakes",          "Jack Johnson")],
+        ["I'm Yours",                "Jason Mraz",             spotifySearchUrl("I'm Yours",                "Jason Mraz")],
+        ["Bloom",                    "The Paper Kites",        spotifySearchUrl("Bloom",                    "The Paper Kites")],
+        ["Sunset Lover",             "Petit Biscuit",          spotifySearchUrl("Sunset Lover",             "Petit Biscuit")],
+        ["Stick Season",             "Noah Kahan",             spotifySearchUrl("Stick Season",             "Noah Kahan")],
+        ["Featherstone",             "The Paper Kites",        spotifySearchUrl("Featherstone",             "The Paper Kites")],
+        ["Skinny Love",              "Bon Iver",               spotifySearchUrl("Skinny Love",              "Bon Iver")],
+        ["Chlorine",                 "Twenty One Pilots",      spotifySearchUrl("Chlorine",                 "Twenty One Pilots")],
+        ["Do I Wanna Know?",         "Arctic Monkeys",         spotifySearchUrl("Do I Wanna Know",          "Arctic Monkeys")],
     ],
     "anxious" => [
-        ["Weightless", "Marconi Union", "https://open.spotify.com/track/6hWq7plVsPfGbK9WO4RtU3"],
-        ["Experience", "Ludovico Einaudi", "https://open.spotify.com/track/1BncfTJAOPVhGSHiHBHLHy"],
-        ["River Flows in You", "Yiruma", "https://open.spotify.com/track/6HFoLTLbkiEHOhHB4ZZMJI"],
-        ["Clair de Lune", "Debussy", "https://open.spotify.com/track/2bCg25EOLG5bCyJVHf1gv7"],
-        ["Breathe (2 AM)", "Anna Nalick", "https://open.spotify.com/track/3z50CPJzSVFsOt3EDNfrk1"],
-        ["Mad World", "Gary Jules", "https://open.spotify.com/track/3JOVTQ5h8HyvI8pZT3gfEG"],
-        ["The Sound of Silence", "Simon & Garfunkel", "https://open.spotify.com/track/4H7wGPFzMBFBLBxHU8rCUv"],
-        ["Let It Be", "The Beatles", "https://open.spotify.com/track/7iN1s7xHE4ifF5povM6A48"],
-        ["Spiegel im Spiegel", "Arvo Pärt", "https://open.spotify.com/track/4BwEJOJSbJfAG9mMGzq1sJ"],
-        ["Nuvole Bianche", "Ludovico Einaudi", "https://open.spotify.com/track/5d2VH2mNAkLMXJ3R6zJQnJ"],
+        ["Weightless",               "Marconi Union",          spotifySearchUrl("Weightless",               "Marconi Union")],
+        ["Experience",               "Ludovico Einaudi",       spotifySearchUrl("Experience",               "Ludovico Einaudi")],
+        ["River Flows in You",       "Yiruma",                 spotifySearchUrl("River Flows in You",       "Yiruma")],
+        ["Breathe (2 AM)",           "Anna Nalick",            spotifySearchUrl("Breathe 2 AM",             "Anna Nalick")],
+        ["Let It Be",                "The Beatles",            spotifySearchUrl("Let It Be",                "The Beatles")],
+        ["Nuvole Bianche",           "Ludovico Einaudi",       spotifySearchUrl("Nuvole Bianche",           "Ludovico Einaudi")],
+        ["The Sound of Silence",     "Simon & Garfunkel",      spotifySearchUrl("The Sound of Silence",     "Simon and Garfunkel")],
+        ["Holocene",                 "Bon Iver",               spotifySearchUrl("Holocene",                 "Bon Iver")],
+        ["Clair de Lune",            "Claude Debussy",         spotifySearchUrl("Clair de Lune",            "Debussy")],
+        ["In My Room",               "The Beach Boys",         spotifySearchUrl("In My Room",               "The Beach Boys")],
+        ["Saturn",                   "Stevie Wonder",          spotifySearchUrl("Saturn",                   "Stevie Wonder")],
+        ["The Night Will Always Win","Manchester Orchestra",   spotifySearchUrl("The Night Will Always Win","Manchester Orchestra")],
+        ["Liability",                "Lorde",                  spotifySearchUrl("Liability",                "Lorde")],
+        ["Smother",                  "Daughter",               spotifySearchUrl("Smother",                  "Daughter")],
+        ["Youth",                    "Daughter",               spotifySearchUrl("Youth",                    "Daughter")],
     ],
     "nostalgic" => [
-        ["Summer of '69", "Bryan Adams", "https://open.spotify.com/track/0MkaHQWNLG9sOBq3JdBFfL"],
-        ["Don't You (Forget About Me)", "Simple Minds", "https://open.spotify.com/track/4F3zRGJON1WB2KrOyDsS0N"],
-        ["Africa", "Toto", "https://open.spotify.com/track/2374M0fQpWi3dLnB54qaLX"],
-        ["Come On Eileen", "Dexys Midnight Runners", "https://open.spotify.com/track/0vFabeTqtOtJdSQABFXXJh"],
-        ["1979", "The Smashing Pumpkins", "https://open.spotify.com/track/0dREmcFg0tWvvCFstiqFJi"],
-        ["Fast Car", "Tracy Chapman", "https://open.spotify.com/track/3UcSBfKRqBXKJFoY7cBQV4"],
-        ["Zombie", "The Cranberries", "https://open.spotify.com/track/6nzxy2wXs6tLgzEtqOkEi2"],
-        ["Smells Like Teen Spirit", "Nirvana", "https://open.spotify.com/track/5ghIJDpPoe3CfHMGu71E6T"],
-        ["Everybody Hurts", "R.E.M.", "https://open.spotify.com/track/6PypGyiu0Y2lCDBN1XZEnP"],
-        ["Mr. Jones", "Counting Crows", "https://open.spotify.com/track/6KQ6uxRrQSUC7mN9UqsQ2K"],
+        ["Africa",                   "Toto",                   spotifySearchUrl("Africa",                   "Toto")],
+        ["Summer of '69",            "Bryan Adams",            spotifySearchUrl("Summer of 69",             "Bryan Adams")],
+        ["Don't You (Forget About Me)","Simple Minds",         spotifySearchUrl("Don't You Forget About Me","Simple Minds")],
+        ["Fast Car",                 "Tracy Chapman",          spotifySearchUrl("Fast Car",                 "Tracy Chapman")],
+        ["Zombie",                   "The Cranberries",        spotifySearchUrl("Zombie",                   "The Cranberries")],
+        ["Smells Like Teen Spirit",  "Nirvana",                spotifySearchUrl("Smells Like Teen Spirit",  "Nirvana")],
+        ["Wonderwall",               "Oasis",                  spotifySearchUrl("Wonderwall",               "Oasis")],
+        ["Mr. Jones",                "Counting Crows",         spotifySearchUrl("Mr Jones",                 "Counting Crows")],
+        ["Semi-Charmed Life",        "Third Eye Blind",        spotifySearchUrl("Semi-Charmed Life",        "Third Eye Blind")],
+        ["Come As You Are",          "Nirvana",                spotifySearchUrl("Come As You Are",          "Nirvana")],
+        ["Bohemian Rhapsody",        "Queen",                  spotifySearchUrl("Bohemian Rhapsody",        "Queen")],
+        ["Hotel California",         "Eagles",                 spotifySearchUrl("Hotel California",         "Eagles")],
+        ["Sweet Child O' Mine",      "Guns N' Roses",          spotifySearchUrl("Sweet Child O Mine",       "Guns N Roses")],
+        ["Losing My Religion",       "R.E.M.",                 spotifySearchUrl("Losing My Religion",       "REM")],
+        ["With or Without You",      "U2",                     spotifySearchUrl("With or Without You",      "U2")],
     ],
     "lonely" => [
-        ["Eleanor Rigby", "The Beatles", "https://open.spotify.com/track/3T4tUhGYeRNVUGevb0wThu"],
-        ["Iris", "Goo Goo Dolls", "https://open.spotify.com/track/6pRGHfbEFPmKdx0yMjmr1K"],
-        ["How to Save a Life", "The Fray", "https://open.spotify.com/track/1bRu32dWOY9mFObRGKOVkJ"],
-        ["People Are Strange", "The Doors", "https://open.spotify.com/track/4cXhsil3rAgfMNm0lj43ML"],
-        ["Lonely", "Akon", "https://open.spotify.com/track/2LMkwUfqC6S6s6qDVlEuzV"],
-        ["Unwell", "Matchbox Twenty", "https://open.spotify.com/track/4DJa0kzrF3VUMKoGVQXV4Q"],
-        ["Black", "Pearl Jam", "https://open.spotify.com/track/4XHjENLCEiMDzsFZgRHQl9"],
-        ["I Am a Rock", "Simon & Garfunkel", "https://open.spotify.com/track/75JFxkI2RXiU7L9VmCAV6V"],
-        ["Only the Lonely", "Roy Orbison", "https://open.spotify.com/track/4m4pNkwSAJ3nYkfqL3nkXs"],
-        ["Mr. Lonely", "Bobby Vinton", "https://open.spotify.com/track/5qDkNl1FJLHfO7p53JQfFV"],
+        ["Iris",                     "Goo Goo Dolls",          spotifySearchUrl("Iris",                     "Goo Goo Dolls")],
+        ["Eleanor Rigby",            "The Beatles",            spotifySearchUrl("Eleanor Rigby",            "The Beatles")],
+        ["How to Save a Life",       "The Fray",               spotifySearchUrl("How to Save a Life",       "The Fray")],
+        ["Lonely",                   "Akon",                   spotifySearchUrl("Lonely",                   "Akon")],
+        ["Creep",                    "Radiohead",              spotifySearchUrl("Creep",                    "Radiohead")],
+        ["Unwell",                   "Matchbox Twenty",        spotifySearchUrl("Unwell",                   "Matchbox Twenty")],
+        ["Mad World",                "Gary Jules",             spotifySearchUrl("Mad World",                "Gary Jules")],
+        ["The Sound of Silence",     "Simon & Garfunkel",      spotifySearchUrl("The Sound of Silence",     "Simon and Garfunkel")],
+        ["Black",                    "Pearl Jam",              spotifySearchUrl("Black",                    "Pearl Jam")],
+        ["I Am a Rock",              "Simon & Garfunkel",      spotifySearchUrl("I Am a Rock",              "Simon and Garfunkel")],
+        ["Motion Sickness",          "Phoebe Bridgers",        spotifySearchUrl("Motion Sickness",          "Phoebe Bridgers")],
+        ["Sober",                    "Childish Gambino",       spotifySearchUrl("Sober",                    "Childish Gambino")],
+        ["Me and My Shadow",         "Frank Sinatra",          spotifySearchUrl("Me and My Shadow",         "Frank Sinatra")],
+        ["Mr. Lonely",               "Bobby Vinton",           spotifySearchUrl("Mr Lonely",                "Bobby Vinton")],
+        ["Alone Again",              "Gilbert O'Sullivan",     spotifySearchUrl("Alone Again",              "Gilbert O'Sullivan")],
     ],
     "confident" => [
-        ["Roar", "Katy Perry", "https://open.spotify.com/track/6HDKN9kyByAsxFM9Ob5qGW"],
-        ["Fighter", "Christina Aguilera", "https://open.spotify.com/track/3PZLmCX3Pf7hfqcLRJ9gUC"],
-        ["HUMBLE.", "Kendrick Lamar", "https://open.spotify.com/track/7KXjTSCq5nL1LoYtL7XAwS"],
-        ["Stronger (What Doesn't Kill You)", "Kelly Clarkson", "https://open.spotify.com/track/1TfqLAPs4K3s2rJMoCokcX"],
-        ["We Will Rock You", "Queen", "https://open.spotify.com/track/4pbJqGIASGPr0ZpGpnWkDn"],
-        ["Can't Hold Us", "Macklemore & Ryan Lewis", "https://open.spotify.com/track/0SFkeBQjR1OfRjWJolkX5M"],
-        ["Started From the Bottom", "Drake", "https://open.spotify.com/track/3hFCpKGqzCFjnqjBMl8D9d"],
-        ["Run the World (Girls)", "Beyoncé", "https://open.spotify.com/track/4P1tqKTHW7GalYQ7nAFNPu"],
-        ["Power", "Kanye West", "https://open.spotify.com/track/2gZUPNdnz5Y45eiGxpHGSc"],
-        ["Fight Song", "Rachel Platten", "https://open.spotify.com/track/1E9VPkVa2yhtRWOdGSWkCm"],
+        ["Roar",                     "Katy Perry",             spotifySearchUrl("Roar",                     "Katy Perry")],
+        ["HUMBLE.",                  "Kendrick Lamar",         spotifySearchUrl("HUMBLE",                   "Kendrick Lamar")],
+        ["Stronger (What Doesn't Kill You)","Kelly Clarkson",  spotifySearchUrl("Stronger",                 "Kelly Clarkson")],
+        ["We Will Rock You",         "Queen",                  spotifySearchUrl("We Will Rock You",         "Queen")],
+        ["Can't Hold Us",            "Macklemore",             spotifySearchUrl("Can't Hold Us",            "Macklemore Ryan Lewis")],
+        ["Fight Song",               "Rachel Platten",         spotifySearchUrl("Fight Song",               "Rachel Platten")],
+        ["Stronger",                 "Kanye West",             spotifySearchUrl("Stronger",                 "Kanye West")],
+        ["Till I Collapse",          "Eminem",                 spotifySearchUrl("Till I Collapse",          "Eminem")],
+        ["Run the World (Girls)",    "Beyoncé",                spotifySearchUrl("Run the World Girls",      "Beyonce")],
+        ["Started From the Bottom",  "Drake",                  spotifySearchUrl("Started From the Bottom",  "Drake")],
+        ["Power",                    "Kanye West",             spotifySearchUrl("Power",                    "Kanye West")],
+        ["Baddest",                  "K/DA",                   spotifySearchUrl("Baddest",                  "KDA")],
+        ["Formation",                "Beyoncé",                spotifySearchUrl("Formation",                "Beyonce")],
+        ["Not Afraid",               "Eminem",                 spotifySearchUrl("Not Afraid",               "Eminem")],
+        ["Work B**ch",               "Britney Spears",         spotifySearchUrl("Work Bitch",               "Britney Spears")],
     ],
     "tired" => [
-        ["Breathe", "Pink Floyd", "https://open.spotify.com/track/4cW5n5hcPvnFbaqv5CBLUC"],
-        ["Asleep", "The Smiths", "https://open.spotify.com/track/2RxK6pElsaGrE3f8zrIj0l"],
-        ["Dream a Little Dream", "Ella Fitzgerald", "https://open.spotify.com/track/5rXYIvVOyUbMqhEHuGcSzp"],
-        ["Holocene", "Bon Iver", "https://open.spotify.com/track/40VWLOkdQQ4CrH7dKHTzLH"],
-        ["Slow Dancing in a Burning Room", "John Mayer", "https://open.spotify.com/track/36b2aPmBSMDVJHj82BQKBI"],
-        ["Sleepyhead", "Passion Pit", "https://open.spotify.com/track/2eSBUYpQLlrBRWAHDSMUiy"],
-        ["Night Owl", "Galimatias", "https://open.spotify.com/track/1ySoHjqb0lEDhFjEFAJqiA"],
-        ["4AM", "Kaskade", "https://open.spotify.com/track/6JRo09i9gp6VHRkm1m2iMV"],
-        ["Skinny Love", "Bon Iver", "https://open.spotify.com/track/5dMGEelyAoSmNjwBMreMpj"],
-        ["The Sound of Silence", "Disturbed", "https://open.spotify.com/track/04oOxCQkRFGO3E0Zo2Bmpg"],
+        ["Breathe",                  "Pink Floyd",             spotifySearchUrl("Breathe",                  "Pink Floyd")],
+        ["Asleep",                   "The Smiths",             spotifySearchUrl("Asleep",                   "The Smiths")],
+        ["Holocene",                 "Bon Iver",               spotifySearchUrl("Holocene",                 "Bon Iver")],
+        ["Slow Dancing in a Burning Room","John Mayer",        spotifySearchUrl("Slow Dancing in a Burning Room","John Mayer")],
+        ["Dream a Little Dream",     "Ella Fitzgerald",        spotifySearchUrl("Dream a Little Dream",     "Ella Fitzgerald")],
+        ["Skinny Love",              "Bon Iver",               spotifySearchUrl("Skinny Love",              "Bon Iver")],
+        ["Be Still",                 "The Killers",            spotifySearchUrl("Be Still",                 "The Killers")],
+        ["Such Great Heights",       "The Postal Service",     spotifySearchUrl("Such Great Heights",       "The Postal Service")],
+        ["Lua",                      "Bright Eyes",            spotifySearchUrl("Lua",                      "Bright Eyes")],
+        ["Naked as We Came",         "Iron and Wine",          spotifySearchUrl("Naked as We Came",         "Iron and Wine")],
+        ["Black Swan",               "Thom Yorke",             spotifySearchUrl("Black Swan",               "Thom Yorke")],
+        ["Hide and Seek",            "Imogen Heap",            spotifySearchUrl("Hide and Seek",            "Imogen Heap")],
+        ["Motion Picture Soundtrack","Radiohead",              spotifySearchUrl("Motion Picture Soundtrack","Radiohead")],
+        ["Lullaby",                  "Sia",                    spotifySearchUrl("Lullaby",                  "Sia")],
+        ["Breathe Me",               "Sia",                    spotifySearchUrl("Breathe Me",               "Sia")],
     ],
     "hopeful" => [
-        ["Here Comes the Sun", "The Beatles", "https://open.spotify.com/track/6dGnYIeXmHdcikdzNNDMm2"],
-        ["Don't Stop Me Now", "Queen", "https://open.spotify.com/track/5T8EDUDqKcs6OSOwEsfqG7"],
-        ["Beautiful Day", "U2", "https://open.spotify.com/track/1bEf00VE7TA7kXaMrRFp8m"],
-        ["Good Life", "OneRepublic", "https://open.spotify.com/track/6XGoLvCmBp58QLgkpNXiMV"],
-        ["Rise Up", "Andra Day", "https://open.spotify.com/track/74VOlZXxnOGQkCEZG9Qlqr"],
-        ["Hall of Fame", "The Script", "https://open.spotify.com/track/5h07dBKEpAaXUJoZXpnvbq"],
-        ["A Sky Full of Stars", "Coldplay", "https://open.spotify.com/track/0BCiDoPW4jL9bSqLBBT28A"],
-        ["Brave", "Sara Bareilles", "https://open.spotify.com/track/4RvWPyQ5RL0ao9LPZeSouE"],
-        ["Keep Your Head Up", "Ben Howard", "https://open.spotify.com/track/7FGWJg4CxaRGJIEiuqS0TK"],
-        ["Count on Me", "Bruno Mars", "https://open.spotify.com/track/4pOkjKMKJ3iBk7HBGolhsS"],
+        ["Here Comes the Sun",       "The Beatles",            spotifySearchUrl("Here Comes the Sun",       "The Beatles")],
+        ["Beautiful Day",            "U2",                     spotifySearchUrl("Beautiful Day",            "U2")],
+        ["Rise Up",                  "Andra Day",              spotifySearchUrl("Rise Up",                  "Andra Day")],
+        ["Good Life",                "OneRepublic",            spotifySearchUrl("Good Life",                "OneRepublic")],
+        ["Don't Stop Me Now",        "Queen",                  spotifySearchUrl("Don't Stop Me Now",        "Queen")],
+        ["A Sky Full of Stars",      "Coldplay",               spotifySearchUrl("A Sky Full of Stars",      "Coldplay")],
+        ["Brave",                    "Sara Bareilles",         spotifySearchUrl("Brave",                    "Sara Bareilles")],
+        ["Hall of Fame",             "The Script",             spotifySearchUrl("Hall of Fame",             "The Script")],
+        ["Dog Days Are Over",        "Florence + The Machine", spotifySearchUrl("Dog Days Are Over",        "Florence and The Machine")],
+        ["Count on Me",              "Bruno Mars",             spotifySearchUrl("Count on Me",              "Bruno Mars")],
+        ["Better Days",              "OneRepublic",            spotifySearchUrl("Better Days",              "OneRepublic")],
+        ["The Middle",               "Jimmy Eat World",        spotifySearchUrl("The Middle",               "Jimmy Eat World")],
+        ["Eye of the Tiger",         "Survivor",               spotifySearchUrl("Eye of the Tiger",         "Survivor")],
+        ["Unwritten",                "Natasha Bedingfield",    spotifySearchUrl("Unwritten",                "Natasha Bedingfield")],
+        ["I Gotta Feeling",          "The Black Eyed Peas",    spotifySearchUrl("I Gotta Feeling",          "The Black Eyed Peas")],
     ],
     "focus" => [
-        ["Experience", "Ludovico Einaudi", "https://open.spotify.com/track/1BncfTJAOPVhGSHiHBHLHy"],
-        ["Divenire", "Ludovico Einaudi", "https://open.spotify.com/track/7nGYZJiUQXm2ICFNJDQMM5"],
-        ["Nuvole Bianche", "Ludovico Einaudi", "https://open.spotify.com/track/5d2VH2mNAkLMXJ3R6zJQnJ"],
-        ["Time", "Hans Zimmer", "https://open.spotify.com/track/6ZFbXIJkuI1dVNWvzJzown"],
-        ["Comptine d'un autre été", "Yann Tiersen", "https://open.spotify.com/track/2DPYF5oEJPpAFqcmAh78OI"],
-        ["Journey", "Hans Zimmer", "https://open.spotify.com/track/5IHnKGDu1VSmqQ4Rn0DMBA"],
-        ["Intro", "The xx", "https://open.spotify.com/track/2rcOqNQPDeKYKJPNOfZJlH"],
-        ["Midnight City", "M83", "https://open.spotify.com/track/3PGRPmlLKOCBb7jUPeIsp1"],
-        ["Interstellar Theme", "Hans Zimmer", "https://open.spotify.com/track/5ItGHWDTOQCrLK8UkzXMUf"],
-        ["River Flows in You", "Yiruma", "https://open.spotify.com/track/6HFoLTLbkiEHOhHB4ZZMJI"],
+        ["Experience",               "Ludovico Einaudi",       spotifySearchUrl("Experience",               "Ludovico Einaudi")],
+        ["Time",                     "Hans Zimmer",            spotifySearchUrl("Time",                     "Hans Zimmer Inception")],
+        ["River Flows in You",       "Yiruma",                 spotifySearchUrl("River Flows in You",       "Yiruma")],
+        ["Nuvole Bianche",           "Ludovico Einaudi",       spotifySearchUrl("Nuvole Bianche",           "Ludovico Einaudi")],
+        ["Divenire",                 "Ludovico Einaudi",       spotifySearchUrl("Divenire",                 "Ludovico Einaudi")],
+        ["Intro",                    "The xx",                 spotifySearchUrl("Intro",                    "The xx")],
+        ["Midnight City",            "M83",                    spotifySearchUrl("Midnight City",            "M83")],
+        ["Clair de Lune",            "Claude Debussy",         spotifySearchUrl("Clair de Lune",            "Debussy")],
+        ["On the Nature of Daylight","Max Richter",            spotifySearchUrl("On the Nature of Daylight","Max Richter")],
+        ["Gymnopédie No.1",          "Erik Satie",             spotifySearchUrl("Gymnopedie No 1",          "Erik Satie")],
+        ["Comptine d'un autre été",  "Yann Tiersen",           spotifySearchUrl("Comptine d un autre ete",  "Yann Tiersen")],
+        ["An Ending (Ascent)",       "Brian Eno",              spotifySearchUrl("An Ending Ascent",         "Brian Eno")],
+        ["Lost in Thought",          "Hans Zimmer",            spotifySearchUrl("Lost in Thought",          "Hans Zimmer")],
+        ["Cornfield Chase",          "Hans Zimmer",            spotifySearchUrl("Cornfield Chase",          "Hans Zimmer")],
+        ["First Steps",              "Hans Zimmer",            spotifySearchUrl("First Steps",              "Hans Zimmer Interstellar")],
     ],
     "melancholy" => [
-        ["Fade Into You", "Mazzy Star", "https://open.spotify.com/track/3J7nTBVvHU1zNmvLYA7Ikq"],
-        ["4th of July", "Sufjan Stevens", "https://open.spotify.com/track/2GCmKOQIDm3dxqVnFSQR4M"],
-        ["Re: Stacks", "Bon Iver", "https://open.spotify.com/track/2WZzqWt8GCvjFJrpjJrQiJ"],
-        ["Flightless Bird", "Iron and Wine", "https://open.spotify.com/track/6rMDvOdYJwJDZY4iqnRCOo"],
-        ["Naked as We Came", "Iron and Wine", "https://open.spotify.com/track/4LaBbJzX9lxSPQkSk9F0J1"],
-        ["Blue Ridge Mountains", "Fleet Foxes", "https://open.spotify.com/track/5PbdFBVWBaKP2GJpxP8mbS"],
-        ["White Winter Hymnal", "Fleet Foxes", "https://open.spotify.com/track/4V9PDMiZWS7QkwEYp4aYPF"],
-        ["Motion Picture Soundtrack", "Radiohead", "https://open.spotify.com/track/21lMPuEDGz3tBGnKJlxoEG"],
-        ["Death With Dignity", "Sufjan Stevens", "https://open.spotify.com/track/0jYhU8V8wHRjKoG3s7KKgv"],
-        ["Casimir Pulaski Day", "Sufjan Stevens", "https://open.spotify.com/track/4EKMWCPRlmI7cZ3CU4XPe3"],
+        ["Fade Into You",            "Mazzy Star",             spotifySearchUrl("Fade Into You",            "Mazzy Star")],
+        ["Re: Stacks",               "Bon Iver",               spotifySearchUrl("Re Stacks",                "Bon Iver")],
+        ["Flightless Bird",          "Iron and Wine",          spotifySearchUrl("Flightless Bird",          "Iron and Wine")],
+        ["White Winter Hymnal",      "Fleet Foxes",            spotifySearchUrl("White Winter Hymnal",      "Fleet Foxes")],
+        ["Motion Picture Soundtrack","Radiohead",              spotifySearchUrl("Motion Picture Soundtrack","Radiohead")],
+        ["Blue Ridge Mountains",     "Fleet Foxes",            spotifySearchUrl("Blue Ridge Mountains",     "Fleet Foxes")],
+        ["4th of July",              "Sufjan Stevens",         spotifySearchUrl("4th of July",              "Sufjan Stevens")],
+        ["Naked as We Came",         "Iron and Wine",          spotifySearchUrl("Naked as We Came",         "Iron and Wine")],
+        ["Skinny Love",              "Bon Iver",               spotifySearchUrl("Skinny Love",              "Bon Iver")],
+        ["Holocene",                 "Bon Iver",               spotifySearchUrl("Holocene",                 "Bon Iver")],
+        ["Death With Dignity",       "Sufjan Stevens",         spotifySearchUrl("Death With Dignity",       "Sufjan Stevens")],
+        ["Poison & Wine",            "The Civil Wars",         spotifySearchUrl("Poison and Wine",          "The Civil Wars")],
+        ["From the Morning",         "Nick Drake",             spotifySearchUrl("From the Morning",         "Nick Drake")],
+        ["Pink Moon",                "Nick Drake",             spotifySearchUrl("Pink Moon",                "Nick Drake")],
+        ["Breathe Me",               "Sia",                    spotifySearchUrl("Breathe Me",               "Sia")],
     ],
     "surprised" => [
-        ["Blinding Lights", "The Weeknd", "https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b"],
-        ["Levitating", "Dua Lipa", "https://open.spotify.com/track/463CkQjx2Zk1yXoBuierM9"],
-        ["Anti-Hero", "Taylor Swift", "https://open.spotify.com/track/0V3wPSX9ygBnCm8psDIegu"],
-        ["good 4 u", "Olivia Rodrigo", "https://open.spotify.com/track/4ZtFanR9U6ndgddUvNcjcG"],
-        ["As It Was", "Harry Styles", "https://open.spotify.com/track/4Dvkj6JhhA12EX05fT7y2e"],
-        ["Stay", "The Kid LAROI & Justin Bieber", "https://open.spotify.com/track/5HCyWlXZPP0y6Gqq8TgA20"],
-        ["Dynamite", "BTS", "https://open.spotify.com/track/0t1kP63rueHleOhQkYSXFY"],
-        ["Watermelon Sugar", "Harry Styles", "https://open.spotify.com/track/6UelLqGlWMcVH1E5c4Hboy"],
-        ["Peaches", "Justin Bieber", "https://open.spotify.com/track/4iJyoBOLtHqaWYs3wyiets"],
-        ["MONTERO", "Lil Nas X", "https://open.spotify.com/track/7gJGvKHOBBe1V3eMV7eI8V"],
+        ["Blinding Lights",          "The Weeknd",             spotifySearchUrl("Blinding Lights",          "The Weeknd")],
+        ["Levitating",               "Dua Lipa",               spotifySearchUrl("Levitating",               "Dua Lipa")],
+        ["Anti-Hero",                "Taylor Swift",           spotifySearchUrl("Anti-Hero",                "Taylor Swift")],
+        ["good 4 u",                 "Olivia Rodrigo",         spotifySearchUrl("good 4 u",                 "Olivia Rodrigo")],
+        ["As It Was",                "Harry Styles",           spotifySearchUrl("As It Was",                "Harry Styles")],
+        ["Dynamite",                 "BTS",                    spotifySearchUrl("Dynamite",                 "BTS")],
+        ["Watermelon Sugar",         "Harry Styles",           spotifySearchUrl("Watermelon Sugar",         "Harry Styles")],
+        ["Stay",                     "The Kid LAROI",          spotifySearchUrl("Stay",                     "The Kid LAROI Justin Bieber")],
+        ["abcdefu",                  "GAYLE",                  spotifySearchUrl("abcdefu",                  "GAYLE")],
+        ["Heat Waves",               "Glass Animals",          spotifySearchUrl("Heat Waves",               "Glass Animals")],
+        ["Physical",                 "Dua Lipa",               spotifySearchUrl("Physical",                 "Dua Lipa")],
+        ["Bad Guy",                  "Billie Eilish",          spotifySearchUrl("Bad Guy",                  "Billie Eilish")],
+        ["Flowers",                  "Miley Cyrus",            spotifySearchUrl("Flowers",                  "Miley Cyrus")],
+        ["Shivers",                  "Ed Sheeran",             spotifySearchUrl("Shivers",                  "Ed Sheeran")],
+        ["Montero",                  "Lil Nas X",              spotifySearchUrl("Montero Call Me By Your Name","Lil Nas X")],
     ],
     "fearful" => [
-        ["Running Up That Hill", "Kate Bush", "https://open.spotify.com/track/75FEaRjZTKLhTrFGsfMUXR"],
-        ["Mad World", "Gary Jules", "https://open.spotify.com/track/3JOVTQ5h8HyvI8pZT3gfEG"],
-        ["Everybody Hurts", "R.E.M.", "https://open.spotify.com/track/6PypGyiu0Y2lCDBN1XZEnP"],
-        ["Creep", "Radiohead", "https://open.spotify.com/track/70LcF31zb1H0PyJoS1Sx1r"],
-        ["Black", "Pearl Jam", "https://open.spotify.com/track/4XHjENLCEiMDzsFZgRHQl9"],
-        ["The Sound of Silence", "Disturbed", "https://open.spotify.com/track/04oOxCQkRFGO3E0Zo2Bmpg"],
-        ["Breathe (2 AM)", "Anna Nalick", "https://open.spotify.com/track/3z50CPJzSVFsOt3EDNfrk1"],
-        ["Asleep", "The Smiths", "https://open.spotify.com/track/2RxK6pElsaGrE3f8zrIj0l"],
-        ["Motion Picture Soundtrack", "Radiohead", "https://open.spotify.com/track/21lMPuEDGz3tBGnKJlxoEG"],
-        ["When It's All Over", "RAIGN", "https://open.spotify.com/search/When+Its+All+Over+RAIGN"],
+        ["Running Up That Hill",     "Kate Bush",              spotifySearchUrl("Running Up That Hill",     "Kate Bush")],
+        ["Mad World",                "Gary Jules",             spotifySearchUrl("Mad World",                "Gary Jules")],
+        ["Creep",                    "Radiohead",              spotifySearchUrl("Creep",                    "Radiohead")],
+        ["Everybody Hurts",          "R.E.M.",                 spotifySearchUrl("Everybody Hurts",          "REM")],
+        ["Black",                    "Pearl Jam",              spotifySearchUrl("Black",                    "Pearl Jam")],
+        ["The Sound of Silence",     "Disturbed",              spotifySearchUrl("The Sound of Silence",     "Disturbed")],
+        ["Breathe (2 AM)",           "Anna Nalick",            spotifySearchUrl("Breathe 2 AM",             "Anna Nalick")],
+        ["Asleep",                   "The Smiths",             spotifySearchUrl("Asleep",                   "The Smiths")],
+        ["Motion Picture Soundtrack","Radiohead",              spotifySearchUrl("Motion Picture Soundtrack","Radiohead")],
+        ["Holocene",                 "Bon Iver",               spotifySearchUrl("Holocene",                 "Bon Iver")],
+        ["Exit Music (For a Film)",  "Radiohead",              spotifySearchUrl("Exit Music For a Film",    "Radiohead")],
+        ["I'm So Tired...",          "Lauv & Troye Sivan",     spotifySearchUrl("I'm So Tired",             "Lauv Troye Sivan")],
+        ["Smother",                  "Daughter",               spotifySearchUrl("Smother",                  "Daughter")],
+        ["Youth",                    "Daughter",               spotifySearchUrl("Youth",                    "Daughter")],
+        ["Shallows",                 "Daughter",               spotifySearchUrl("Shallows",                 "Daughter")],
     ],
     "disgusted" => [
-        ["Killing In The Name", "Rage Against The Machine", "https://open.spotify.com/track/59WN2psjkt1tyaxjspN8fp"],
-        ["Chop Suey!", "System of a Down", "https://open.spotify.com/track/2CHvBhKGpFMIZUAInCuSPY"],
-        ["Last Resort", "Papa Roach", "https://open.spotify.com/track/79cdsBZQLsi5xQANvkJoDA"],
-        ["Break Stuff", "Limp Bizkit", "https://open.spotify.com/track/4Gp3rHYILBXQqvF6m4cHlR"],
-        ["Du Hast", "Rammstein", "https://open.spotify.com/track/6Ei9WLObWw5OBb0ykxNzxX"],
-        ["Basket Case", "Green Day", "https://open.spotify.com/track/7MJQ9Nfxzh8LPZ9e9u68Fq"],
-        ["American Idiot", "Green Day", "https://open.spotify.com/track/0JMhSBCCCfFHCRnV8QF0jz"],
-        ["Bullet with Butterfly Wings", "Smashing Pumpkins", "https://open.spotify.com/track/5VkqILJxvNnXp2WUNIiACb"],
-        ["Down With The Sickness", "Disturbed", "https://open.spotify.com/track/5IqGZpGXPMUqCZhVODqRLD"],
-        ["Numb", "Linkin Park", "https://open.spotify.com/track/3igfgOKcSrfBkCBLMrCJyB"],
+        ["Killing In The Name",      "Rage Against The Machine", spotifySearchUrl("Killing In The Name",   "Rage Against The Machine")],
+        ["Chop Suey!",               "System of a Down",         spotifySearchUrl("Chop Suey",            "System of a Down")],
+        ["Numb",                     "Linkin Park",              spotifySearchUrl("Numb",                  "Linkin Park")],
+        ["American Idiot",           "Green Day",                spotifySearchUrl("American Idiot",        "Green Day")],
+        ["Basket Case",              "Green Day",                spotifySearchUrl("Basket Case",           "Green Day")],
+        ["Break Stuff",              "Limp Bizkit",              spotifySearchUrl("Break Stuff",           "Limp Bizkit")],
+        ["Bullet with Butterfly Wings","Smashing Pumpkins",      spotifySearchUrl("Bullet with Butterfly Wings","Smashing Pumpkins")],
+        ["Down With The Sickness",   "Disturbed",                spotifySearchUrl("Down With The Sickness","Disturbed")],
+        ["Du Hast",                  "Rammstein",                spotifySearchUrl("Du Hast",               "Rammstein")],
+        ["Bulls on Parade",          "Rage Against The Machine", spotifySearchUrl("Bulls on Parade",       "Rage Against The Machine")],
+        ["Welcome to the Black Parade","My Chemical Romance",    spotifySearchUrl("Welcome to the Black Parade","My Chemical Romance")],
+        ["Helena",                   "My Chemical Romance",      spotifySearchUrl("Helena",                "My Chemical Romance")],
+        ["I'm Not Okay",             "My Chemical Romance",      spotifySearchUrl("I'm Not Okay",          "My Chemical Romance")],
+        ["Sugar We're Goin Down",    "Fall Out Boy",             spotifySearchUrl("Sugar We're Goin Down", "Fall Out Boy")],
+        ["Dance Dance",              "Fall Out Boy",             spotifySearchUrl("Dance Dance",           "Fall Out Boy")],
     ],
     "neutral" => [
-        ["Blinding Lights", "The Weeknd", "https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b"],
-        ["Shape of You", "Ed Sheeran", "https://open.spotify.com/track/7qiZfU4dY1lWllzX7mPBI3"],
-        ["As It Was", "Harry Styles", "https://open.spotify.com/track/4Dvkj6JhhA12EX05fT7y2e"],
-        ["Bad Guy", "Billie Eilish", "https://open.spotify.com/track/2Fxmhks0bxGSBdJ92vM42m"],
-        ["Watermelon Sugar", "Harry Styles", "https://open.spotify.com/track/6UelLqGlWMcVH1E5c4Hboy"],
-        ["Drivers License", "Olivia Rodrigo", "https://open.spotify.com/track/5wANPM4fQCJwkGd4rN57mH"],
-        ["Stay", "The Kid LAROI & Justin Bieber", "https://open.spotify.com/track/5HCyWlXZPP0y6Gqq8TgA20"],
-        ["Anti-Hero", "Taylor Swift", "https://open.spotify.com/track/0V3wPSX9ygBnCm8psDIegu"],
-        ["good 4 u", "Olivia Rodrigo", "https://open.spotify.com/track/4ZtFanR9U6ndgddUvNcjcG"],
-        ["Peaches", "Justin Bieber", "https://open.spotify.com/track/4iJyoBOLtHqaWYs3wyiets"],
+        ["Blinding Lights",          "The Weeknd",             spotifySearchUrl("Blinding Lights",          "The Weeknd")],
+        ["Shape of You",             "Ed Sheeran",             spotifySearchUrl("Shape of You",             "Ed Sheeran")],
+        ["As It Was",                "Harry Styles",           spotifySearchUrl("As It Was",                "Harry Styles")],
+        ["Bad Guy",                  "Billie Eilish",          spotifySearchUrl("Bad Guy",                  "Billie Eilish")],
+        ["Watermelon Sugar",         "Harry Styles",           spotifySearchUrl("Watermelon Sugar",         "Harry Styles")],
+        ["Anti-Hero",                "Taylor Swift",           spotifySearchUrl("Anti-Hero",                "Taylor Swift")],
+        ["good 4 u",                 "Olivia Rodrigo",         spotifySearchUrl("good 4 u",                 "Olivia Rodrigo")],
+        ["Stay",                     "The Kid LAROI",          spotifySearchUrl("Stay",                     "The Kid LAROI Justin Bieber")],
+        ["Heat Waves",               "Glass Animals",          spotifySearchUrl("Heat Waves",               "Glass Animals")],
+        ["Levitating",               "Dua Lipa",               spotifySearchUrl("Levitating",               "Dua Lipa")],
+        ["Flowers",                  "Miley Cyrus",            spotifySearchUrl("Flowers",                  "Miley Cyrus")],
+        ["Shivers",                  "Ed Sheeran",             spotifySearchUrl("Shivers",                  "Ed Sheeran")],
+        ["Golden Hour",              "JVKE",                   spotifySearchUrl("Golden Hour",              "JVKE")],
+        ["Calm Down",                "Rema & Selena Gomez",    spotifySearchUrl("Calm Down",                "Rema Selena Gomez")],
+        ["Rich Flex",                "Drake & 21 Savage",      spotifySearchUrl("Rich Flex",                "Drake 21 Savage")],
     ],
 ];
 
+// Expand fallback list, shuffle, return 10
 $fallbackTracks = $fallback[$mood] ?? $fallback["neutral"];
+
+// Use microsecond seed for better randomness on rapid refreshes
+mt_srand((int)(microtime(true) * 1000));
 shuffle($fallbackTracks);
 
 $result = array_map(fn($t) => [
@@ -405,7 +505,7 @@ $result = array_map(fn($t) => [
     "album"         => ["images" => []],
     "external_urls" => ["spotify" => $t[2]],
     "preview_url"   => null,
-], $fallbackTracks);
+], array_slice($fallbackTracks, 0, 10));
 
 echo json_encode([
     "success"     => true,
